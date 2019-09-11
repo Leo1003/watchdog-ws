@@ -12,3 +12,5 @@
 # Mac Desktop Services Store
 .DS_Store
 
+# Configure file
+config.toml
