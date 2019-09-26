@@ -8,7 +8,7 @@ extern crate lazy_static;
 use log::LevelFilter;
 use self::config::Configure;
 use std::process::exit;
-use ws::{Handler, Handshake, Request};
+use ws::{Handler, Handshake, Request, Sender, util::Token};
 use url::Url;
 use std::sync::Mutex;
 use self::error::AppResult;
@@ -19,6 +19,7 @@ mod error;
 lazy_static! {
     static ref RETRIED: Mutex<u32> = Mutex::new(0);
 }
+const PING_CLOCK_EVENT: Token = Token(1);
 
 fn main() -> AppResult<()> {
     env_logger::from_env(env_logger::Env::default().default_filter_or("debug")).init();
@@ -36,9 +37,11 @@ fn main() -> AppResult<()> {
     }
 
     loop {
-        ws::connect(cfg.url(), |_s| {
+        ws::connect(cfg.url(), |s| {
             debug!("TCP connect");
             WsHandler {
+                socket: s,
+                keepalive: cfg.keepalive_ms(),
                 token: cfg.token(),
             }
         }).map_err(|err| {
@@ -54,8 +57,10 @@ fn main() -> AppResult<()> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct WsHandler<'a> {
+    socket: Sender,
+    keepalive: u64,
     token: &'a str,
 }
 
@@ -70,6 +75,20 @@ impl Handler for WsHandler<'_> {
     fn on_open(&mut self, _shake: Handshake) -> ws::Result<()> {
         info!("Connection established.");
         *RETRIED.lock().unwrap() = 0;
+
+        self.socket.timeout(self.keepalive, PING_CLOCK_EVENT)?;
         Ok(())
+    }
+    fn on_timeout(&mut self, event: Token) -> ws::Result<()> {
+        if event == PING_CLOCK_EVENT {
+            debug!("PING_CLOCK_EVENT triggered!");
+            // send ping
+            self.socket.ping(Vec::new())?;
+            // reschedule the timeout
+            self.socket.timeout(self.keepalive, PING_CLOCK_EVENT)?;
+            Ok(())
+        } else {
+            Err(ws::Error::new(ws::ErrorKind::Internal, "Invalid timeout token!"))
+        }
     }
 }
